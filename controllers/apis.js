@@ -18,6 +18,7 @@ const {
 const { hashPassword, verifyPassword, createToken, verifyToken } = require('../lib/auth');
 const { callGemini, safeJsonParse, GeminiError } = require('../lib/gemini');
 const { getClientIp, rateLimit } = require('../lib/rate-limit');
+const { parseCheckInput, normalizeBody, parseNumberField } = require('../lib/form-data');
 
 const DEFAULT_TLDS = ['com', 'in', 'au', 'site', 'ai', 'net', 'org', 'io', 'co'];
 
@@ -81,9 +82,11 @@ module.exports = {
       const auth = await resolveAuthUser(req);
       if (auth.error) return res.status(auth.status).json({ error: auth.error });
 
-      const { domains, tlds } = req.body;
-      if (!domains || !Array.isArray(domains)) {
-        return res.status(400).json({ error: 'Invalid input. Expected an array of domains.' });
+      const { domains, tlds } = parseCheckInput(req);
+      if (!domains.length) {
+        return res.status(400).json({
+          error: 'Invalid input. Send domains as JSON array, form field, or upload a CSV/TXT file.',
+        });
       }
 
       const domainsToCheck = expandDomains(domains, tlds).slice(0, 50);
@@ -152,9 +155,9 @@ module.exports = {
         return res.status(429).json({ error: 'AI generation rate limit reached. Try again in an hour.' });
       }
 
-      const body = req.body || {};
-      const count = Math.max(3, Math.min(20, body.count ?? 5));
-      const creativity = Math.max(0, Math.min(100, body.creativity ?? 60));
+      const body = normalizeBody(req);
+      const count = Math.max(3, Math.min(20, parseNumberField(body.count, 5)));
+      const creativity = Math.max(0, Math.min(100, parseNumberField(body.creativity, 60)));
       const temperature = 0.4 + (creativity / 100) * 0.7;
 
       const toolFocus = body.toolFocus?.trim() || body.toolType?.trim();
@@ -229,14 +232,15 @@ For each name, provide a one-line meaning (max 12 words). Return ONLY valid JSON
         return res.status(429).json({ error: 'Domain idea generation rate limit reached. Try again in an hour.' });
       }
 
-      const { idea, count } = req.body || {};
-      if (!idea?.trim()) {
+      const body = normalizeBody(req);
+      const idea = body.idea?.trim();
+      if (!idea) {
         return res.status(400).json({ error: 'Business idea is required.' });
       }
 
-      const domainCount = Math.max(5, Math.min(20, count ?? 15));
+      const domainCount = Math.max(5, Math.min(20, parseNumberField(body.count, 15)));
       const text = await callGemini({
-        prompt: `Generate ${domainCount} highly brandable, short, and professional domain names for the following idea: "${idea.trim()}".
+        prompt: `Generate ${domainCount} highly brandable, short, and professional domain names for the following idea: "${idea}".
 Include a mix of .com, .io, .ai, and .co TLDs.
 Do not use numbers or hyphens.
 Return ONLY a comma-separated list of domain names, nothing else. Example: fitnova.com, getfit.io, fitzone.ai`,
@@ -264,7 +268,8 @@ Return ONLY a comma-separated list of domain names, nothing else. Example: fitno
         return res.status(429).json({ error: 'Analyzer rate limit reached. Try again in an hour.' });
       }
 
-      const name = req.body?.name?.trim();
+      const body = normalizeBody(req);
+      const name = body.name?.trim();
       if (!name || name.length < 2) {
         return res.status(400).json({ error: 'Provide a name to analyze.' });
       }
@@ -332,7 +337,8 @@ Return ONLY this JSON shape:
         return res.status(429).json({ error: 'Daily limit reached (10 messages/day). Please upgrade to a paid plan for unlimited access.' });
       }
 
-      const { niche, projectInfo, prompt, history } = req.body || {};
+      const body = normalizeBody(req);
+      const { niche, projectInfo, prompt, history } = body;
       if (!prompt) return res.status(400).json({ error: 'Prompt is required' });
 
       const info = projectInfo || {};
@@ -371,7 +377,8 @@ Do not use markdown formatting like bolding or lists unless necessary, keep it c
 
   auth: async (req, res) => {
     try {
-      const { email, password, action } = req.body || {};
+      const body = normalizeBody(req);
+      const { email, password, action } = body;
       if (!email || !password) {
         return res.status(400).json({ error: 'Email and password are required' });
       }
@@ -434,7 +441,8 @@ Do not use markdown formatting like bolding or lists unless necessary, keep it c
       const payload = await verifyToken(token);
       if (!payload?.email) return res.status(401).json({ error: 'Invalid token' });
 
-      const { action, plan } = req.body || {};
+      const body = normalizeBody(req);
+      const { action, plan } = body;
 
       if (action === 'update_plan') {
         if (!['Free', 'Pro', 'Business', 'Enterprise'].includes(plan)) {
